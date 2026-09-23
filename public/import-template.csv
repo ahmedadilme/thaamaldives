@@ -1,0 +1,4 @@
+Resort,Room Type,Meal Plan,Date From,Date To,Currency,SGL Rate,DBL Rate,TPL Rate,QTRP Rate,Extra Adult,Child Rate,Infant Rate,Available Rooms,Transfer Adult,Transfer Child,Availability Status,Source
+Anantara Dhigu Maldives,Sunrise Beach Villa,BB,2026-01-08,2026-04-11,USD,1577,1589,1965,N/A,182,89,FOC,12,220,110,Available,Resort contract 2026
+Coral Sands Hotel,Deluxe Room,BB,2026-01-01,2026-12-31,USD,175,190,245,N/A,45,25,FOC,6,30,15,Available,Hotel contract 2026
+Anantara Dhigu Maldives,Sunset Over Water Pool Villa,HB,2026-04-12,2026-10-15,USD,On Request,On Request,On Request,N/A,,,FOC,,260,130,On Request,Resort contract 2026

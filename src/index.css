@@ -1,0 +1,210 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-brand-50: 234 250 247;
+    --color-brand-100: 208 242 235;
+    --color-brand-200: 165 229 215;
+    --color-brand-300: 111 209 189;
+    --color-brand-400: 63 181 155;
+    --color-brand-500: 29 146 125;
+    --color-brand-600: 18 117 101;
+    --color-brand-700: 14 93 81;
+    --color-brand-800: 14 74 66;
+    --color-brand-900: 13 62 56;
+    --color-brand-950: 6 40 37;
+
+    --color-gold-50: 253 249 237;
+    --color-gold-100: 250 240 205;
+    --color-gold-200: 244 223 155;
+    --color-gold-300: 237 200 97;
+    --color-gold-400: 231 177 58;
+    --color-gold-500: 212 149 31;
+    --color-gold-600: 184 116 24;
+    --color-gold-700: 148 84 24;
+    --color-gold-800: 122 67 27;
+    --color-gold-900: 104 56 28;
+    --color-gold-950: 60 29 13;
+
+    --color-ink-50: 246 247 248;
+    --color-ink-100: 235 238 241;
+    --color-ink-200: 212 219 224;
+    --color-ink-300: 174 186 196;
+    --color-ink-400: 130 144 158;
+    --color-ink-500: 99 115 130;
+    --color-ink-600: 78 91 104;
+    --color-ink-700: 64 74 85;
+    --color-ink-800: 55 63 71;
+    --color-ink-900: 31 36 41;
+    --color-ink-950: 15 18 20;
+
+    --color-sand-50: 251 248 241;
+    --color-sand-100: 245 239 226;
+    --color-sand-200: 234 221 198;
+    --color-sand-300: 220 197 158;
+    --color-sand-400: 208 173 124;
+    --color-sand-500: 198 154 99;
+
+    --color-cream: 251 247 239;
+  }
+
+  [data-theme='thaa'] {
+    --color-gold-50: 244 250 238;
+    --color-gold-100: 230 243 216;
+    --color-gold-200: 205 228 178;
+    --color-gold-300: 170 207 129;
+    --color-gold-400: 126 182 86;
+    --color-gold-500: 88 147 40;
+    --color-gold-600: 50 115 3;
+    --color-gold-700: 43 94 8;
+    --color-gold-800: 38 75 13;
+    --color-gold-900: 34 63 17;
+    --color-gold-950: 18 34 9;
+
+    --color-brand-50: 240 251 253;
+    --color-brand-100: 221 245 249;
+    --color-brand-200: 185 230 238;
+    --color-brand-300: 126 204 219;
+    --color-brand-400: 48 177 191;
+    --color-brand-500: 26 140 184;
+    --color-brand-600: 3 90 166;
+    --color-brand-700: 10 76 140;
+    --color-brand-800: 14 64 108;
+    --color-brand-900: 15 53 84;
+    --color-brand-950: 8 33 48;
+
+    --color-sand-50: 245 248 251;
+    --color-sand-100: 235 241 247;
+    --color-sand-200: 213 224 234;
+    --color-sand-300: 186 203 218;
+    --color-sand-400: 160 181 200;
+    --color-sand-500: 116 130 146;
+
+    --color-cream: 247 250 253;
+  }
+
+  [data-theme='ocean'] {
+    --color-gold-50: 253 247 240;
+    --color-gold-100: 250 235 215;
+    --color-gold-200: 243 214 172;
+    --color-gold-300: 234 187 124;
+    --color-gold-400: 226 160 82;
+    --color-gold-500: 215 136 52;
+    --color-gold-600: 188 106 40;
+    --color-gold-700: 150 82 36;
+    --color-gold-800: 124 68 37;
+    --color-gold-900: 104 58 36;
+    --color-gold-950: 59 32 18;
+
+    --color-brand-50: 234 247 250;
+    --color-brand-100: 205 238 245;
+    --color-brand-200: 160 221 235;
+    --color-brand-300: 100 199 222;
+    --color-brand-400: 48 170 198;
+    --color-brand-500: 21 141 168;
+    --color-brand-600: 10 112 137;
+    --color-brand-700: 12 90 111;
+    --color-brand-800: 15 73 90;
+    --color-brand-900: 16 59 72;
+    --color-brand-950: 8 34 42;
+
+    --color-sand-50: 247 250 251;
+    --color-sand-100: 240 246 248;
+    --color-sand-200: 224 236 240;
+    --color-sand-300: 200 218 224;
+    --color-sand-400: 178 198 206;
+    --color-sand-500: 158 180 189;
+
+    --color-cream: 246 251 252;
+  }
+
+  [data-theme='sunset'] {
+    --color-gold-50: 254 250 238;
+    --color-gold-100: 253 243 210;
+    --color-gold-200: 248 226 164;
+    --color-gold-300: 242 204 108;
+    --color-gold-400: 235 182 68;
+    --color-gold-500: 222 156 34;
+    --color-gold-600: 196 122 22;
+    --color-gold-700: 155 90 22;
+    --color-gold-800: 128 72 26;
+    --color-gold-900: 105 60 25;
+    --color-gold-950: 60 32 11;
+
+    --color-brand-50: 253 246 244;
+    --color-brand-100: 251 230 224;
+    --color-brand-200: 246 201 188;
+    --color-brand-300: 241 165 142;
+    --color-brand-400: 235 127 97;
+    --color-brand-500: 224 96 63;
+    --color-brand-600: 200 74 45;
+    --color-brand-700: 165 60 37;
+    --color-brand-800: 138 55 37;
+    --color-brand-900: 114 50 36;
+    --color-brand-950: 56 26 21;
+
+    --color-sand-50: 253 250 245;
+    --color-sand-100: 248 239 225;
+    --color-sand-200: 240 219 191;
+    --color-sand-300: 229 193 148;
+    --color-sand-400: 218 168 111;
+    --color-sand-500: 209 147 82;
+
+    --color-cream: 253 248 240;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-cream font-sans text-ink-800;
+  }
+  h1, h2, h3, h4, h5 {
+    @apply text-ink-950;
+  }
+  ::selection {
+    @apply bg-brand-600 text-white;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+  .bg-radial-fade {
+    background: radial-gradient(120% 90% at 50% 10%, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.5) 38%, rgba(255, 255, 255, 0) 74%);
+  }
+  .shadow-card {
+    box-shadow: 0 18px 50px -18px rgba(15, 18, 20, 0.28);
+  }
+  .shadow-lift {
+    box-shadow: 0 30px 80px -30px rgba(15, 18, 20, 0.4);
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .text-gradient-gold {
+    background: linear-gradient(105deg, rgb(var(--color-gold-400)), rgb(var(--color-gold-500)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
