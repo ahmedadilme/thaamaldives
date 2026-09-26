@@ -35,6 +35,7 @@ import {
 } from '@/lib/theme';
 import { cx, SectionHeading } from '@/components/ui';
 import { ContentTab } from '@/components/admin/content-tab';
+import { MediaTab } from '@/components/admin/media-tab';
 import { getContent, patchContent } from '@/content/client';
 import { properties } from '@/data/properties';
 import {
@@ -55,13 +56,14 @@ import type {
 } from '@/inventory/schema';
 import { displayDate, todayISO } from '@/lib/dates';
 
-type Section = 'dashboard' | 'inventory' | 'imports' | 'modules' | 'content' | 'settings';
+type Section = 'dashboard' | 'inventory' | 'imports' | 'modules' | 'media' | 'content' | 'settings';
 
 const NAV: Array<{ id: Section; label: string; icon: typeof Boxes }> = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'inventory', label: 'Inventory', icon: Boxes },
   { id: 'imports', label: 'Imports', icon: Upload },
   { id: 'modules', label: 'Modules', icon: Settings2 },
+  { id: 'media', label: 'Media', icon: Upload },
   { id: 'content', label: 'Content', icon: FileText },
   { id: 'settings', label: 'Settings', icon: Palette },
 ];
@@ -150,6 +152,8 @@ export default function Admin() {
                 return <ModulesTab onGoContent={() => setSection('content')} />;
               case 'content':
                 return <ContentTab />;
+              case 'media':
+                return <MediaTab />;
               case 'settings':
                 return <SettingsTab />;
             }
@@ -942,8 +946,8 @@ function SettingsTab() {
           />
         </label>
         <p className="mt-3 text-xs leading-relaxed text-ink-400">
-          Shown once per session, after the delay. Closing dismisses for the session; “Not interested” hides that offer
-          for a week. Offers are edited in the Content section.
+          Shown on every page load after the delay. Closing hides it until you refresh; “Not interested” hides that
+          offer for a week. Offers are edited in the Content section.
         </p>
       </Card>
     </div>

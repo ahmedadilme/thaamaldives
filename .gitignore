@@ -10,6 +10,7 @@ node_modules
 dist
 dist-ssr
 *.local
+src/assets/hero
 
 .vscode/*
 !.vscode/extensions.json

@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { getPopOffer } from '@/content/offers';
 import { getContent } from '@/content/client';
+import { Button } from './ui';
 
 const KEY = 'thaa.offerDismiss.v1';
-const VISIT_KEY = 'thaa.offerSeenSession.v1';
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
 type Dismiss = { offerId: string; at: number } | null;
@@ -29,40 +29,42 @@ function writeDismiss(d: Dismiss) {
 
 export function OfferPop() {
   const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    const offer = getPopOffer();
-    const settings = getContent().settings.offerPop;
-    if (!offer || !settings.enabled) return;
-
-    const dismiss = readDismiss();
-    if (dismiss && dismiss.offerId === offer.id && Date.now() - dismiss.at < SEVEN_DAYS) return;
-
-    let sessionSeen = false;
-    try {
-      sessionSeen = sessionStorage.getItem(VISIT_KEY) === offer.id;
-    } catch {
-      // ignore
-    }
-    if (sessionSeen) return;
-
-    const t = window.setTimeout(() => {
-      setVisible(true);
-      try {
-        sessionStorage.setItem(VISIT_KEY, offer.id);
-      } catch {
-        // ignore
-      }
-    }, settings.delayMs);
-
-    return () => window.clearTimeout(t);
-  }, []);
-
-  if (!visible) return null;
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   const offer = getPopOffer();
   const settings = getContent().settings.offerPop;
-  if (!offer || !settings.enabled) return null;
+  const offerId = offer?.id;
+
+  // Show after the configured delay. Nothing is stored in sessionStorage, so a
+  // refresh always re-shows the offer; closing only hides it for this mount.
+  useEffect(() => {
+    if (!offerId || !settings.enabled) return;
+
+    const dismiss = readDismiss();
+    if (dismiss && dismiss.offerId === offerId && Date.now() - dismiss.at < SEVEN_DAYS) return;
+
+    const t = window.setTimeout(() => setVisible(true), settings.delayMs);
+    return () => window.clearTimeout(t);
+  }, [offerId, settings.enabled, settings.delayMs]);
+
+  // Escape closes; body scroll is locked while the card is up.
+  useEffect(() => {
+    if (!visible) return;
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setVisible(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
+    closeRef.current?.focus();
+
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+    };
+  }, [visible]);
+
+  if (!visible || !offer || !settings.enabled) return null;
 
   const close = () => setVisible(false);
 
@@ -72,52 +74,70 @@ export function OfferPop() {
   };
 
   return (
-    <div
-      role="dialog"
-      aria-label={`Special offer: ${offer.title}`}
-      className="fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-sm animate-fade-in-up"
-    >
-      <div className="overflow-hidden rounded-3xl border border-ink-950/10 bg-white shadow-2xl">
-        <div className="relative h-28 bg-gradient-to-br from-brand-600 via-brand-700 to-ink-950">
-          {offer.poster && (
-            <>
-              <img src={offer.poster} alt="" className="h-full w-full object-cover" />
-              <div className="absolute inset-0 bg-gradient-to-t from-ink-950/80 via-ink-950/20 to-transparent" />
-            </>
-          )}
+    <div className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center">
+      <div
+        className="absolute inset-0 animate-fade-in bg-ink-950/60 backdrop-blur-sm"
+        onClick={close}
+        aria-hidden="true"
+      />
+
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Special offer: ${offer.title}`}
+        className="relative w-full max-w-[26rem] animate-scale-in overflow-hidden rounded-3xl border border-ink-950/10 bg-white shadow-2xl"
+      >
+        <button
+          ref={closeRef}
+          onClick={close}
+          aria-label="Close offer"
+          className="absolute right-3 top-3 z-10 grid h-9 w-9 place-items-center rounded-full bg-ink-950/50 text-white backdrop-blur transition-colors hover:bg-ink-950/75"
+        >
+          <X size={16} />
+        </button>
+
+        <div className="relative aspect-[3/4] w-full bg-gradient-to-br from-brand-600 via-brand-700 to-ink-950">
+          {offer.poster ? (
+            <img src={offer.poster} alt="" className="h-full w-full object-cover" />
+          ) : null}
+          <div className="absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent" />
+
           {offer.badge && (
             <span className="absolute left-4 top-4 rounded-full bg-gold-500 px-3 py-1 text-[10px] font-black uppercase tracking-wider text-ink-950">
               {offer.badge}
             </span>
           )}
-          <button
-            onClick={close}
-            aria-label="Close offer"
-            className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-ink-950/40 text-white backdrop-blur transition-colors hover:bg-ink-950/70"
-          >
-            <X size={15} />
-          </button>
-          <div className="absolute bottom-3 left-4 right-4">
-            <p className="font-display text-2xl font-semibold leading-tight text-white">{offer.title}</p>
+
+          <div className="absolute bottom-0 left-0 right-0 p-5">
+            <h2 className="font-display text-3xl font-semibold leading-tight text-white">{offer.title}</h2>
+            {offer.subtitle && (
+              <p className="mt-2 text-sm leading-relaxed text-white/80">{offer.subtitle}</p>
+            )}
           </div>
         </div>
-        <div className="p-5">
-          <p className="text-sm leading-relaxed text-ink-600">{offer.subtitle}</p>
-          <div className="mt-4 flex items-center gap-3">
-            <a
-              href={offer.ctaHref ?? '/packages'}
-              onClick={close}
-              className="inline-flex flex-1 items-center justify-center rounded-full bg-brand-600 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-brand-500"
-            >
-              {offer.ctaLabel ?? 'View offer'}
-            </a>
-            <button
-              onClick={notInterested}
-              className="rounded-full px-3 py-2.5 text-xs font-semibold text-ink-500 underline-offset-4 hover:text-ink-800 hover:underline"
-            >
-              Not interested
-            </button>
-          </div>
+
+        <div className="flex items-center gap-3 p-5">
+          <Button
+            variant="gold"
+            size="md"
+            href={offer.ctaHref || '/packages'}
+            onClick={close}
+            className="flex-1"
+          >
+            {offer.ctaLabel || 'View offer'}
+          </Button>
+          <Button variant="outline" size="md" to="/packages" onClick={close}>
+            View packages
+          </Button>
+        </div>
+
+        <div className="px-5 pb-5">
+          <button
+            onClick={notInterested}
+            className="w-full rounded-full py-2 text-center text-xs font-semibold text-ink-500 underline-offset-4 transition-colors hover:text-ink-800 hover:underline"
+          >
+            Not interested — don&apos;t show this offer again for a week
+          </button>
         </div>
       </div>
     </div>

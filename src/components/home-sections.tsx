@@ -31,7 +31,7 @@ import { getActiveOffers } from '@/content/offers';
 const HERO_VIDEO_INTERVAL = 7000;
 
 const HERO_LOCAL_VIDEOS: string[] = Object.values(
-  import.meta.glob('/src/assets/hero/*.{mp4,webm}', { eager: true, as: 'url' })
+  import.meta.glob('/src/assets/hero/*.{mp4,mov,m4v,webm,MP4,MOV,M4V,WEBM}', { eager: true, as: 'url' })
 );
 
 function ScrollCue() {
@@ -361,7 +361,7 @@ export function StayKinds() {
 
 export function SpecialOffers() {
   const offers = getActiveOffers();
-  const hasCustom = (getContent().offers?.length ?? 0) > 0;
+  const hasCustom = offers.length > 0;
 
   return (
     <section className="bg-sand-100/70 py-24">

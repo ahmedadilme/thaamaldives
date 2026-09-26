@@ -1,11 +1,13 @@
 import { useState, type ReactNode } from 'react';
 import { CheckCircle2, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { cx } from '@/components/ui';
 import { getContent, patchContent, resetContent } from '@/content/client';
 import { DEFAULTS } from '@/content/defaults';
 import type { ContentOutboundDestination, SiteContent } from '@/content/types';
 import { isModuleEnabled } from '@/lib/modules';
 import type { PackageOffer } from '@/types';
 import { MODULES } from '@/config/modules';
+import { UrlUploadField } from './url-upload-field';
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
@@ -95,9 +97,21 @@ function ArrayEmpty({ label, onAdd }: { label: string; onAdd: () => void }) {
   );
 }
 
+type ContentGroupTab = 'brand' | 'nav' | 'home' | 'testimonials' | 'commerce' | 'outbound';
+
+const CONTENT_TABS: Array<{ id: ContentGroupTab; label: string }> = [
+  { id: 'brand', label: 'Brand' },
+  { id: 'nav', label: 'Navigation' },
+  { id: 'home', label: 'Home Page' },
+  { id: 'testimonials', label: 'Word of Mouth' },
+  { id: 'commerce', label: 'Commerce' },
+  { id: 'outbound', label: 'Outbound Travel' },
+];
+
 export function ContentTab() {
   const [draft, setDraft] = useState<SiteContent>(() => getContent());
   const [msg, setMsg] = useState('');
+  const [tab, setTab] = useState<ContentGroupTab>('brand');
 
   const set = (fn: (d: SiteContent) => void) =>
     setDraft((d) => {
@@ -117,6 +131,8 @@ export function ContentTab() {
         (DEFAULTS as unknown as Record<string, unknown>)[key]
       );
     });
+
+  const tabs = CONTENT_TABS.filter((t) => t.id !== 'outbound' || isModuleEnabled('outbound'));
 
   return (
     <div className="space-y-5">
@@ -150,6 +166,27 @@ export function ContentTab() {
         </p>
       )}
 
+      <div className="overflow-x-auto border-b border-ink-950/10">
+        <div className="flex min-w-max gap-1">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={cx(
+                'whitespace-nowrap border-b-2 px-3 py-2.5 text-sm transition-colors',
+                tab === t.id
+                  ? 'border-brand-600 font-semibold text-ink-950'
+                  : 'border-transparent text-ink-500 hover:text-ink-900'
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="pt-1">
+      {tab === 'brand' && (
       <Group eyebrow="Brand" title="Site & contact" hint="Used across the header, footer and contact actions." onReset={() => resetGroup('site')}>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Brand name" value={draft.site.brandName} onChange={(v) => set((d) => void (d.site.brandName = v))} />
@@ -163,7 +200,9 @@ export function ContentTab() {
           </div>
         </div>
       </Group>
+      )}
 
+      {tab === 'nav' && (
       <Group eyebrow="Navigation" title="Nav labels" hint="Labels appear in the header and mobile menu." onReset={() => resetGroup('nav')}>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Explore" value={draft.nav.explore} onChange={(v) => set((d) => void (d.nav.explore = v))} />
@@ -174,7 +213,9 @@ export function ContentTab() {
           <Field label="Travel services" value={draft.nav.travelServices} onChange={(v) => set((d) => void (d.nav.travelServices = v))} />
         </div>
       </Group>
+      )}
 
+      {tab === 'home' && (
       <Group eyebrow="Homepage" title="Hero, marquee & stats" onReset={() => resetGroup('home')}>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="sm:col-span-2">
@@ -186,15 +227,14 @@ export function ContentTab() {
             <Field textarea label="Hero subtitle" value={draft.home.hero.subtitle} onChange={(v) => set((d) => void (d.home.hero.subtitle = v))} />
           </div>
           <div className="sm:col-span-2">
-            <Field
+            <UrlUploadField
+              multiple
               textarea
               label="Hero videos (one URL per line — autoplay, muted, looping)"
               value={draft.home.hero.videos.join('\n')}
               onChange={(v) => set((d) => void (d.home.hero.videos = v.split('\n').map((s) => s.trim()).filter(Boolean)))}
+              hint="Add short clips when you have them. With no videos the hero falls back to a clean image loop."
             />
-            <p className="mt-1.5 text-xs text-ink-400">
-              Add short clips when you have them. With no videos the hero falls back to a clean image loop.
-            </p>
           </div>
           <div className="sm:col-span-2">
             <Field
@@ -228,7 +268,9 @@ export function ContentTab() {
           />
         </div>
       </Group>
+      )}
 
+      {tab === 'testimonials' && (
       <Group eyebrow="Word of mouth" title="Testimonials" hint="Shown on the homepage. Kept short — three reads best." onReset={() => resetGroup('testimonials')}>
         <div className="space-y-4">
           {draft.testimonials.map((t, i) => (
@@ -268,7 +310,9 @@ export function ContentTab() {
           />
         </div>
       </Group>
+      )}
 
+      {tab === 'commerce' && (
       <Group eyebrow="Commerce" title="Offers & packages" hint="Offers feed the homepage offers strip and the special-offer card. Packages feed the Packages page." onReset={() => { resetGroup('offers'); resetGroup('packages'); }}>
         <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.14em] text-ink-500">Special offers</p>
         <div className="space-y-4">
@@ -290,7 +334,7 @@ export function ContentTab() {
                 <div className="sm:col-span-2">
                   <Field label="Subtitle" value={o.subtitle} onChange={(v) => set((d) => void (d.offers[i].subtitle = v))} />
                 </div>
-                <Field label="Poster image (path or URL)" value={o.poster} onChange={(v) => set((d) => void (d.offers[i].poster = v))} />
+                <UrlUploadField label="Poster image (path or URL)" value={o.poster} onChange={(v) => set((d) => void (d.offers[i].poster = v))} />
                 <Field label="CTA href" value={o.ctaHref} onChange={(v) => set((d) => void (d.offers[i].ctaHref = v))} />
                 <Field label="CTA label" value={o.ctaLabel} onChange={(v) => set((d) => void (d.offers[i].ctaLabel = v))} />
                 <Field label="Sort order" number value={o.sortOrder} onChange={(v) => set((d) => void (d.offers[i].sortOrder = Number(v) || 0))} />
@@ -330,8 +374,12 @@ export function ContentTab() {
         </div>
         <p className="mt-3 text-xs text-ink-400">Add/remove package entries by editing the source data — they ship with the defaults.</p>
       </Group>
+      )}
 
+      {tab === 'outbound' && (
       <OutboundEditor draft={draft} set={set} onReset={() => resetGroup('outbound')} />
+      )}
+      </div>
     </div>
   );
 }
@@ -359,7 +407,7 @@ function PackageEditor({
         <Field label="Region" value={pkg.region} onChange={(v) => onChange({ region: v })} />
         <Field label="Nights" value={pkg.nights} onChange={(v) => onChange({ nights: v })} />
         <Field label="From (USD)" number value={pkg.from} onChange={(v) => onChange({ from: Number(v) || 0 })} />
-        <Field label="Image path" value={pkg.image} onChange={(v) => onChange({ image: v })} />
+        <UrlUploadField label="Image path" value={pkg.image} onChange={(v) => onChange({ image: v })} />
         <Field label="Badge" value={pkg.badge ?? ''} onChange={(v) => onChange({ badge: v })} />
         <Field label="Label" value={pkg.label ?? ''} onChange={(v) => onChange({ label: v })} />
         <div className="sm:col-span-2">
@@ -499,7 +547,7 @@ function DestinationEditor({
         <Field label="Slug" value={dest.slug} onChange={(v) => onChange({ slug: v })} />
         <Field label="Eyebrow" value={dest.eyebrow} onChange={(v) => onChange({ eyebrow: v })} />
         <Field label="Cities (comma separated)" value={dest.cities.join(', ')} onChange={(v) => onChange({ cities: v.split(',').map((s) => s.trim()).filter(Boolean) })} />
-        <Field label="Image path" value={dest.image} onChange={(v) => onChange({ image: v })} />
+        <UrlUploadField label="Image path" value={dest.image} onChange={(v) => onChange({ image: v })} />
         <Field label="From price (USD)" number value={dest.fromPrice} onChange={(v) => onChange({ fromPrice: Number(v) || 0 })} />
         <div className="sm:col-span-2">
           <Field textarea label="Blurb" value={dest.blurb} onChange={(v) => onChange({ blurb: v })} />
