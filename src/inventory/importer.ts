@@ -1,6 +1,8 @@
 import {
   AVAIL_KEY,
   RATE_ID,
+  TRANSFER_KEY,
+  toPriceValue,
   toRateCell,
   toAvailabilityStatus,
   isNumericRate,
@@ -9,6 +11,7 @@ import {
   type ImportError,
   type ImportJob,
   type InventoryData,
+  type RateCell,
   type RatePeriod,
   type TransferRate,
 } from './schema';
@@ -57,6 +60,26 @@ export const CSV_COLUMNS = [
 export type CsvColumn = (typeof CSV_COLUMNS)[number];
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/** The rate fields compared when deciding whether two rows are the same period. */
+const RATE_VALUE_FIELDS = ['sgl', 'dbl', 'tpl', 'qtrp', 'ext', 'child', 'infant'] as const;
+
+/**
+ * Describe how two same-key rows disagree.
+ * Returns an empty array when the rows are byte-identical in every rate field.
+ */
+function rateConflicts(
+  a: { [K in (typeof RATE_VALUE_FIELDS)[number]]: RateCell },
+  b: { [K in (typeof RATE_VALUE_FIELDS)[number]]: RateCell }
+): Array<{ field: string; existing: string; incoming: string }> {
+  const out: Array<{ field: string; existing: string; incoming: string }> = [];
+  for (const f of RATE_VALUE_FIELDS) {
+    const av = a[f];
+    const bv = b[f];
+    if (String(av) !== String(bv)) out.push({ field: f, existing: String(av), incoming: String(bv) });
+  }
+  return out;
+}
 
 export function matchResort(name: string, properties: ContractLike[]): ContractLike | undefined {
   const n = norm(name);
@@ -142,6 +165,8 @@ export function importInventoryFromCsv(
   const newAvailability: DailyAvailability[] = [];
   const newTransfers: TransferRate[] = [];
   const transferSeen = new Set<string>();
+  /** Natural key → index into newRates, for intra-file duplicate detection. */
+  const incomingRateIndex = new Map<string, number>();
   let processed = 0;
 
   for (let i = 1; i < rows.length; i += 1) {
@@ -206,8 +231,8 @@ export function importInventoryFromCsv(
 
     const periodRange = { from, to };
 
-    newRates.push({
-      id: RATE_ID(property.slug, roomCode, mealCode, from),
+    const candidate: RatePeriod = {
+      id: RATE_ID(property.slug, roomCode, mealCode, from, to),
       resortSlug: property.slug,
       roomCode,
       mealCode,
@@ -223,7 +248,36 @@ export function importInventoryFromCsv(
       infant,
       source,
       importId,
-    });
+    };
+
+    // Duplicate natural key inside a single file. The first occurrence wins, but
+    // the collision is always recorded with the exact field-level differences
+    // so a reviewer can see which of the two rows to trust.
+    const priorIndex = incomingRateIndex.get(candidate.id);
+    if (priorIndex !== undefined) {
+      const existing = newRates[priorIndex];
+      const conflicts = rateConflicts(existing, candidate);
+      const identical = conflicts.length === 0;
+      errors.push({
+        rowNumber,
+        field: 'Room + Meal + Period',
+        code: identical ? 'DUPLICATE_RATE_PERIOD_IDENTICAL' : 'DUPLICATE_RATE_PERIOD_CONFLICT',
+        message: identical
+          ? `${property.slug} / ${roomCode} / ${mealCode} repeats for ${from} → ${to}; the identical row was ignored.`
+          : `${property.slug} / ${roomCode} / ${mealCode} repeats for ${from} → ${to} with different prices; the first row was kept and this one dropped.`,
+        detail: {
+          resort: property.slug,
+          room: roomCode,
+          mealPlan: mealCode,
+          validFrom: from,
+          validTo: to,
+          ...(conflicts.length > 0 ? { conflicts } : {}),
+        },
+      });
+    } else {
+      incomingRateIndex.set(candidate.id, newRates.length);
+      newRates.push(candidate);
+    }
 
     for (const date of dateRange(periodRange.from, periodRange.to)) {
       newAvailability.push({
@@ -238,22 +292,43 @@ export function importInventoryFromCsv(
       });
     }
 
-    const transferAdult = toNumberOrNull(take('Transfer Adult'));
-    if (transferAdult !== null && !transferSeen.has(property.slug)) {
-      transferSeen.add(property.slug);
-      const transferChild = toNumberOrNull(take('Transfer Child'));
-      newTransfers.push({
-        resortSlug: property.slug,
-        adult: transferAdult,
-        child: transferChild,
-        currency,
-        source,
-        importId,
-      });
+    // Transfer identity is (resort, mode, period). The flat CSV has a single
+    // unnamed transfer column pair, so the mode is recorded as the operator's
+    // default leg and a differing price in a later period is kept as a separate
+    // record rather than overwriting the first one seen.
+    const transferAdult = toPriceValue(take('Transfer Adult'));
+    if (transferAdult !== 'UNPRICED') {
+      const mode = 'default';
+      const key = TRANSFER_KEY(property.slug, mode, from);
+      if (transferSeen.has(key)) {
+        errors.push({
+          rowNumber,
+          field: 'Transfer',
+          code: 'DUPLICATE_TRANSFER_PERIOD',
+          message: `Transfer for ${property.slug} / ${mode} repeats for ${from} → ${to}; the first row was kept.`,
+          detail: { resort: property.slug, validFrom: from, validTo: to },
+        });
+      } else {
+        transferSeen.add(key);
+        const transferChild = toPriceValue(take('Transfer Child'));
+        newTransfers.push({
+          id: key,
+          resortSlug: property.slug,
+          mode,
+          periodLabel: null,
+          validFrom: from,
+          validTo: to,
+          adult: transferAdult,
+          child: transferChild,
+          currency,
+          source,
+          importId,
+        });
+      }
     }
   }
 
-  const rateBase = (r: RatePeriod) => `${r.resortSlug}__${r.roomCode}__${r.mealCode}__${r.validFrom}`;
+  const rateBase = (r: RatePeriod) => RATE_ID(r.resortSlug, r.roomCode, r.mealCode, r.validFrom, r.validTo);
   const availBase = (a: DailyAvailability) => AVAIL_KEY(a.resortSlug, a.roomCode, a.date);
 
   const previousRates = new Map(current.rates.map((r) => [rateBase(r), r]));
@@ -280,6 +355,10 @@ export function importInventoryFromCsv(
   const inventory: InventoryData = {
     version: current.version + 1,
     lastUpdated: nowISO(),
+    // A CSV the operator deliberately uploaded is an explicit, auditable
+    // import: it attests the provenance and is the only path that makes prices
+    // sellable. This is stamped by the importer, not by a client-side toggle.
+    provenance: 'VERIFIED_IMPORT',
     rates: newRates,
     availability: newAvailability,
     transfers: newTransfers,
@@ -309,6 +388,20 @@ export function importInventoryFromCsv(
 
 function rateKey(r: { sgl: unknown; dbl: unknown; tpl: unknown; qtrp: unknown; ext: unknown; child: unknown; infant: unknown }) {
   return [r.sgl, r.dbl, r.tpl, r.qtrp, r.ext, r.child, r.infant].map(String).join('|');
+}
+
+/** Widest period window declared by a property's contract, used for non-period records. */
+function firstPeriodRange(property: ContractLike): { from: string | null; to: string | null } {
+  const periods = property.contract.periods ?? [];
+  let from: string | null = null;
+  let to: string | null = null;
+  for (const p of periods) {
+    const range = parsePeriodLabel(p);
+    if (!range) continue;
+    if (range.from && (from === null || range.from < from)) from = range.from;
+    if (range.to && (to === null || range.to > to)) to = range.to;
+  }
+  return { from, to };
 }
 
 export interface SeedOptions {
@@ -357,7 +450,7 @@ export function seedInventory(properties: ContractLike[], options: SeedOptions =
       const infant = toRateCell(Array.isArray(row.infant) ? row.infant[0] : row.infant);
 
       rates.push({
-        id: RATE_ID(property.slug, roomCode, mealCode, range.from),
+        id: RATE_ID(property.slug, roomCode, mealCode, range.from, range.to),
         resortSlug: property.slug,
         roomCode,
         mealCode,
@@ -397,18 +490,30 @@ export function seedInventory(properties: ContractLike[], options: SeedOptions =
       }
     }
 
-    const transfer = property.contract.transfers?.[0];
-    if (transfer && !transferSeen.has(property.slug)) {
-      transferSeen.add(property.slug);
+  // Transfers sit outside the per-period loop, so the seeded record uses the
+  // property's overall contract window rather than any single row's period.
+  const seededRange = firstPeriodRange(property);
+  const transfer = property.contract.transfers?.[0];
+  if (transfer) {
+    const mode = 'default';
+    const key = TRANSFER_KEY(property.slug, mode, seededRange.to ?? null);
+    if (!transferSeen.has(key)) {
+      transferSeen.add(key);
       transfers.push({
+        id: key,
         resortSlug: property.slug,
-        adult: toNumberOrNull(Array.isArray(transfer.adult) ? transfer.adult[0] : transfer.adult) ?? 0,
-        child: toNumberOrNull(Array.isArray(transfer.child) ? transfer.child[0] : transfer.child),
+        mode,
+        periodLabel: null,
+        validFrom: seededRange.from ?? null,
+        validTo: seededRange.to ?? null,
+        adult: toPriceValue(Array.isArray(transfer.adult) ? transfer.adult[0] : transfer.adult),
+        child: toPriceValue(Array.isArray(transfer.child) ? transfer.child[0] : transfer.child),
         currency,
         source,
         importId,
       });
     }
+  }
   }
 
   const seenAvail = new Set<string>();
@@ -440,6 +545,7 @@ export function seedInventory(properties: ContractLike[], options: SeedOptions =
   return {
     version: 1,
     lastUpdated: nowISO(),
+    provenance: 'SEEDED',
     rates,
     availability: collapsed,
     transfers,

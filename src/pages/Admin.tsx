@@ -8,7 +8,9 @@ import {
   FileText,
   FileUp,
   History,
+  Info,
   LayoutDashboard,
+  LogOut,
   Palette,
   RotateCcw,
   Settings2,
@@ -16,6 +18,7 @@ import {
   Upload,
   XCircle,
 } from 'lucide-react';
+import { isAdminProtected, lockAdmin } from '@/lib/admin-auth';
 import { MODULES, type ModuleId } from '@/config/modules';
 import { getModules, resetModules, setModule } from '@/lib/modules';
 import {
@@ -36,7 +39,7 @@ import {
 import { cx, SectionHeading } from '@/components/ui';
 import { ContentTab } from '@/components/admin/content-tab';
 import { MediaTab } from '@/components/admin/media-tab';
-import { getContent, patchContent } from '@/content/client';
+import { getContent, patchContent, exportContent, importContent } from '@/content/client';
 import { properties } from '@/data/properties';
 import {
   getInventory,
@@ -48,6 +51,7 @@ import {
 } from '@/inventory/client';
 import { importInventoryFromCsv, CSV_COLUMNS } from '@/inventory/importer';
 import type { ContractLike } from '@/inventory/importer';
+import { priceValueLabel } from '@/inventory/schema';
 import type {
   AvailabilityStatus,
   ImportJob,
@@ -110,17 +114,27 @@ const rateKey = (r: RatePeriod) => `${r.resortSlug}__${r.roomCode}__${r.mealCode
 
 export default function Admin() {
   const [section, setSection] = useState<Section>('dashboard');
-  const [refresh, setRefresh] = useState(0);
+  const [, setRefresh] = useState(0);
 
   const reload = () => setRefresh((r) => r + 1);
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-20 lg:px-8">
-      <SectionHeading
-        eyebrow="THAA · Operations"
-        title="Inventory ops center."
-        description="Rates, availability, imports and pipeline modules for the THAA Maldives product layer — one source of truth feeding the public site."
-      />
+      <div className="flex flex-wrap items-start justify-between gap-6">
+        <SectionHeading
+          eyebrow="THAA · Operations"
+          title="Inventory ops center."
+          description="Rates, availability, imports and pipeline modules for the THAA Maldives product layer — one source of truth feeding the public site."
+        />
+        {isAdminProtected() && (
+          <button
+            onClick={lockAdmin}
+            className="inline-flex shrink-0 items-center gap-2 rounded-full border border-ink-950/15 px-4 py-2 text-xs font-bold uppercase tracking-wider text-ink-600 transition-colors hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700"
+          >
+            <LogOut size={13} /> Lock admin
+          </button>
+        )}
+      </div>
 
       <div className="mt-10 flex flex-col gap-8 lg:flex-row">
         <nav className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-56 lg:flex-col">
@@ -158,7 +172,6 @@ export default function Admin() {
                 return <SettingsTab />;
             }
           })()}
-          <p className="mt-6 text-right text-xs text-ink-400">render key {refresh} · availability client v1 (static inventory layer)</p>
         </div>
       </div>
     </div>
@@ -198,6 +211,19 @@ function DashboardTab({ onNavigate, reload }: { onNavigate: (s: Section) => void
         <Stat label="Avail. days" value={overview.availabilityDays.toLocaleString()} hint="daily expanded" />
         <Stat label="Transfers" value={String(overview.transfers)} />
         <Stat label="Imports" value={String(overview.imports)} hint={override ? '1 override on top' : 'artifact only'} />
+      </div>
+
+      <div
+        className={cx(
+          'flex flex-wrap items-center gap-3 rounded-2xl border px-4 py-3 text-sm',
+          overview.priceVisible
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : 'border-amber-200 bg-amber-50 text-amber-900'
+        )}
+      >
+        <span className="text-[10px] font-bold uppercase tracking-widest">Prices</span>
+        <span className="font-semibold">{overview.provenanceLabel}</span>
+        <span className="text-xs opacity-80">{overview.provenanceReason}</span>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -252,6 +278,7 @@ function DashboardTab({ onNavigate, reload }: { onNavigate: (s: Section) => void
 /* ------------------------------- Inventory ------------------------------- */
 
 function InventoryTab({ reload }: { reload: () => void }) {
+  const [message, setMessage] = useState('');
   const [tab, setTab] = useState<'availability' | 'rates' | 'transfers'>('availability');
   const inv = getInventory();
   const resorts = useMemo(() => Array.from(new Set(inv.rates.map((r) => r.resortSlug))).sort(), [inv]);
@@ -277,7 +304,12 @@ function InventoryTab({ reload }: { reload: () => void }) {
       .map((r) => ({ resortSlug: r.resortSlug, roomCode: r.roomCode, date: r.date, ...drafts[r.roomCode] }));
     if (updates.length === 0) return;
     const patch = patchAvailability(updates);
-    publishInventory(patch.inventory);
+    try {
+      publishInventory(patch.inventory);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+      return;
+    }
     setDrafts({});
     reload();
   };
@@ -329,10 +361,24 @@ function InventoryTab({ reload }: { reload: () => void }) {
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                className="rounded-full border border-ink-950/10 bg-white px-4 py-2 text-sm font-semibold text-ink-700 focus:outline-none"
+                className="rounded-full border border-ink-950/10 bg-white px-4 py-2 text-sm font-semibold text-ink-700 focus:border-brand-500 focus:outline-none"
               />
             )}
           </div>
+        )}
+
+        {message && (
+          <p
+            className={cx(
+              'flex items-start gap-2 rounded-2xl border px-4 py-3 text-sm',
+              /published|full|Nothing was published/i.test(message)
+                ? 'border-rose-200 bg-rose-50 text-rose-700'
+                : 'border-ink-950/10 bg-sand-50 text-ink-700'
+            )}
+          >
+            <Info size={15} className="mt-0.5 shrink-0" />
+            {message}
+          </p>
         )}
       </div>
 
@@ -439,6 +485,8 @@ function InventoryTab({ reload }: { reload: () => void }) {
             <thead>
               <tr className="border-b border-ink-950/8 text-[11px] uppercase tracking-wider text-ink-400">
                 <th className="px-5 py-3">Resort</th>
+                <th className="px-5 py-3">Mode</th>
+                <th className="px-5 py-3">Period</th>
                 <th className="px-5 py-3 text-right">Adult</th>
                 <th className="px-5 py-3 text-right">Child</th>
                 <th className="px-5 py-3">Currency</th>
@@ -447,10 +495,14 @@ function InventoryTab({ reload }: { reload: () => void }) {
             </thead>
             <tbody>
               {transferRows.map((t) => (
-                <tr key={t.resortSlug} className="border-b border-ink-950/5 last:border-0">
+                <tr key={t.id} className="border-b border-ink-950/5 last:border-0">
                   <td className="px-5 py-3 font-semibold text-ink-950">{t.resortSlug}</td>
-                  <td className="px-5 py-3 text-right">{t.adult}</td>
-                  <td className="px-5 py-3 text-right">{t.child ?? '—'}</td>
+                  <td className="px-5 py-3 text-xs text-ink-600">{t.mode}</td>
+                  <td className="px-5 py-3 text-xs text-ink-600">
+                    {t.periodLabel ?? ([t.validFrom, t.validTo].filter(Boolean).join(' → ') || '—')}
+                  </td>
+                  <td className="px-5 py-3 text-right">{priceValueLabel(t.adult)}</td>
+                  <td className="px-5 py-3 text-right">{priceValueLabel(t.child)}</td>
                   <td className="px-5 py-3">{t.currency}</td>
                   <td className="px-5 py-3 text-xs text-ink-500">{t.source}</td>
                 </tr>
@@ -523,7 +575,14 @@ function ImportsTab({ reload }: { reload: () => void }) {
 
   const publish = () => {
     if (!candidate) return;
-    publishInventory(candidate);
+    try {
+      publishInventory(candidate);
+    } catch (err) {
+      // Leave the candidate staged so the operator can free up storage and retry
+      // instead of losing the import they just reviewed.
+      setMessage(err instanceof Error ? err.message : String(err));
+      return;
+    }
     setMessage('Published. The site now reads this data version.');
     setCandidate(null);
     setFileName('');
@@ -592,7 +651,15 @@ function ImportsTab({ reload }: { reload: () => void }) {
             {job.errors.slice(0, 20).map((err, i) => (
               <li key={i} className="flex items-start gap-2 text-sm text-ink-600">
                 <XCircle size={14} className="mt-0.5 shrink-0 text-rose-500" />
-                <span><strong className="text-ink-950">Row {err.rowNumber}</strong> · {err.field}: {err.message}</span>
+                <span>
+                  <strong className="text-ink-950">Row {err.rowNumber}</strong> · {err.field}: {err.message}
+                  {err.code && <code className="ml-2 rounded bg-ink-950/6 px-1.5 py-0.5 text-[10px] font-bold text-ink-500">{err.code}</code>}
+                  {err.detail?.conflicts && err.detail.conflicts.length > 0 && (
+                    <span className="mt-1 block text-xs text-ink-500">
+                      {err.detail.conflicts.map((c) => `${c.field}: kept ${c.existing}, dropped ${c.incoming}`).join(' · ')}
+                    </span>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -733,6 +800,7 @@ function SettingsTab() {
   const [active, setActive] = useState<ThemeId>(getTheme());
   const [pop, setPop] = useState<{ enabled: boolean; delayMs: number }>(() => getContent().settings.offerPop);
   const [custom, setCustom] = useState<CustomPalette>(() => getCustomPalette() ?? { ...DEFAULT_CUSTOM_PALETTE });
+  const [backupNote, setBackupNote] = useState<string | null>(null);
 
   const pick = (id: ThemeId) => {
     setTheme(id);
@@ -765,6 +833,27 @@ function SettingsTab() {
 
   const customValid = isHex(custom.brand) && isHex(custom.accent) && isHex(custom.paper) && isHex(custom.neutral);
   const preview = customValid ? paletteToVars(custom) : null;
+
+  const onExport = () => {
+    const blob = new Blob([JSON.stringify(exportContent(), null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `thaa-content-${todayISO()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const onImport = (file: File) => {
+    void file.text().then((text) => {
+      const res = importContent(text);
+      if (res.ok) {
+        setBackupNote('Content restored from backup. Reload to see every change.');
+      } else {
+        setBackupNote(res.error ?? 'Import failed.');
+      }
+    });
+  };
 
   const patchPop = (patch: Partial<{ enabled: boolean; delayMs: number }>) => {
     const next = { ...pop, ...patch };
@@ -949,6 +1038,39 @@ function SettingsTab() {
           Shown on every page load after the delay. Closing hides it until you refresh; “Not interested” hides that
           offer for a week. Offers are edited in the Content section.
         </p>
+      </Card>
+
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h3 className="font-display text-lg font-semibold text-ink-950">Content backup</h3>
+            <p className="mt-1 text-sm text-ink-500">
+              Site content lives in this browser only. Download a copy before clearing site data or switching machine.
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button
+            onClick={onExport}
+            className="inline-flex shrink-0 items-center gap-2 rounded-full bg-brand-600 px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-brand-500"
+          >
+            <Download size={14} /> Export JSON
+          </button>
+          <label className="inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-full border border-ink-950/20 px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-ink-700 transition-colors hover:border-gold-500 hover:bg-gold-500 hover:text-ink-950">
+            <Upload size={14} /> Import backup
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onImport(f);
+                e.target.value = '';
+              }}
+            />
+          </label>
+        </div>
+        {backupNote && <p className="mt-4 text-xs leading-relaxed text-ink-600">{backupNote}</p>}
       </Card>
     </div>
   );

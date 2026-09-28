@@ -17,6 +17,7 @@ import { CONTACT, subscribeNewsletter } from '@/lib/enquiry';
 import { isModuleEnabled } from '@/lib/modules';
 import { applyTheme, getTheme } from '@/lib/theme';
 import { getContent } from '@/content/client';
+import { useContentVersion } from '@/content/use-content';
 import { OfferPop } from './OfferPop';
 
 const NAV = [
@@ -202,16 +203,23 @@ export function Header() {
 
 export function Footer() {
   const [email, setEmail] = useState('');
-  const [status, setStatus] = useState<'idle' | 'sent'>('idle');
+  const [status, setStatus] = useState<{ kind: 'idle' | 'ok' | 'error'; message: string }>({ kind: 'idle', message: '' });
+  const [busy, setBusy] = useState(false);
   const location = useLocation();
   const home = location.pathname === '/';
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!email.trim()) return;
-    await subscribeNewsletter(email.trim());
-    setStatus('sent');
-    setEmail('');
+    if (!email.trim() || busy) return;
+    setBusy(true);
+    const res = await subscribeNewsletter(email.trim());
+    setBusy(false);
+    if (res.ok) {
+      setStatus({ kind: 'ok', message: res.message });
+      setEmail('');
+    } else {
+      setStatus({ kind: 'error', message: res.message });
+    }
   };
 
   return (
@@ -232,19 +240,25 @@ export function Footer() {
                   type="email"
                   required
                   value={email}
+                  disabled={busy}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="Email address"
-                  className="w-full rounded-full border border-ink-950/12 bg-white py-3.5 pl-11 pr-4 text-sm text-ink-950 placeholder:text-ink-400 focus:border-gold-500 focus:outline-none"
+                  className="w-full rounded-full border border-ink-950/12 bg-white py-3.5 pl-11 pr-4 text-sm text-ink-950 placeholder:text-ink-400 focus:border-gold-500 focus:outline-none disabled:opacity-60"
                 />
               </div>
               <button
                 type="submit"
-                className="inline-flex items-center gap-2 rounded-full bg-gold-400 px-5 py-3.5 text-sm font-bold text-ink-950 transition-colors hover:bg-gold-300"
+                disabled={busy}
+                className="inline-flex items-center gap-2 rounded-full bg-gold-400 px-5 py-3.5 text-sm font-bold text-ink-950 transition-colors hover:bg-gold-300 disabled:opacity-60"
               >
-                Subscribe <Send size={14} />
+                {busy ? 'Sending…' : 'Subscribe'} {!busy && <Send size={14} />}
               </button>
             </form>
-            {status === 'sent' && <p className="text-sm text-brand-700 md:col-span-2 md:text-right">You’re on the list — welcome aboard.</p>}
+            {status.kind !== 'idle' && (
+              <p className={cx('text-sm md:col-span-2 md:text-right', status.kind === 'ok' ? 'text-brand-700' : 'text-rose-600')}>
+                {status.message}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -336,6 +350,13 @@ export function Layout() {
   useEffect(() => {
     applyTheme(getTheme());
   }, []);
+
+  // Subscribe to content changes so this layout (and therefore the already-
+  // mounted route) re-renders when /admin saves, or when another tab writes.
+  // Pages read getContent() during render, so a re-render is enough — do NOT
+  // re-key <Outlet> here: that would unmount the route on every save and throw
+  // away admin state (active section, unsaved editor drafts, upload queues).
+  useContentVersion();
 
   return (
     <div className="flex min-h-screen flex-col">

@@ -3,7 +3,8 @@ import { resorts } from './resorts';
 import { hotels } from './hotels';
 import { guesthouses } from './guesthouses';
 import { getAddons as resortAddons } from './addons';
-import { getLowestNightly } from '@/inventory/client';
+import { getInventory, getLowestNightly } from '@/inventory/client';
+import { isPriceVerified } from '@/inventory/provenance';
 
 export const properties: Property[] = [
   ...resorts.map((r) => ({ ...r, kind: 'resort' as const })),
@@ -23,7 +24,16 @@ export const kindLabel: Record<Property['kind'], string> = {
 
 export const propertySeasons = (p: Property) => p.contract.periods;
 
+/**
+ * Lowest nightly rate for a property, or 0 when there is no verified price.
+ *
+ * The fallback to `p.contract.rates` is deliberately provenance-gated. Those
+ * rows are hand-maintained fixtures, not an operator import, so falling back to
+ * them unconditionally would republish exactly the unverified numbers the gate
+ * exists to withhold. Both sources are consulted only under VERIFIED_IMPORT.
+ */
 export const lowestNightly = (p: Property): number => {
+  if (!isPriceVerified(getInventory())) return 0;
   const fromInventory = getLowestNightly(p.slug);
   if (fromInventory !== null) return fromInventory;
   let min = Infinity;

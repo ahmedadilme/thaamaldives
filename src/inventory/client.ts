@@ -2,12 +2,17 @@ import baseInventory from './artifacts/inventory.json';
 import {
   AVAIL_KEY,
   INVENTORY_STORAGE_KEY,
+  pricedAmount,
   type AvailabilityStatus,
   type DailyAvailability,
   type InventoryData,
+  type InventoryProvenance,
+  type PriceValue,
   type RateCell,
   type RatePeriod,
 } from './schema';
+import { isPriceVerified, provenanceView } from './provenance';
+import { normalizeInventory } from './migrate';
 import { dateRange, diffDays, parsePeriodLabel } from '@/lib/dates';
 
 const CACHE_TTL_MS = 60_000;
@@ -37,26 +42,76 @@ function readOverride(): InventoryData | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as InventoryData;
     if (!parsed?.rates || !parsed?.availability) return null;
-    return parsed;
+    // Upgrade legacy record shapes in memory; the stored bytes are untouched.
+    return normalizeInventory(parsed);
   } catch {
     return null;
   }
 }
 
+/**
+ * Raised when an inventory override could not be persisted.
+ *
+ * This is deliberately an exception rather than a silent no-op. The previous
+ * implementation swallowed the failure and then re-read storage, so a full
+ * localStorage reported a successful publish while the old rates stayed live —
+ * the worst possible failure mode for pricing data.
+ */
+export class InventoryWriteError extends Error {
+  readonly payloadBytes: number;
+  /** Declared locally because the app targets ES2020, where Error.cause is absent from lib. */
+  readonly cause: unknown;
+
+  constructor(message: string, payloadBytes: number, cause: unknown) {
+    super(message);
+    this.name = 'InventoryWriteError';
+    this.payloadBytes = payloadBytes;
+    this.cause = cause;
+  }
+
+  get isQuota(): boolean {
+    return (
+      this.cause instanceof DOMException &&
+      (this.cause.name === 'QuotaExceededError' || this.cause.name === 'NS_ERROR_DOM_QUOTA_REACHED')
+    );
+  }
+}
+
 function writeOverride(data: InventoryData): void {
+  let payload: string;
   try {
-    localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // storage full or unavailable; keep in-memory via cache only
+    payload = JSON.stringify(data);
+  } catch (err) {
+    throw new InventoryWriteError('Inventory could not be serialised for storage.', 0, err);
+  }
+  const bytes = payload.length;
+  if (typeof localStorage === 'undefined') {
+    throw new InventoryWriteError('Browser storage is unavailable, so inventory cannot be published.', bytes, null);
+  }
+  try {
+    localStorage.setItem(INVENTORY_STORAGE_KEY, payload);
+  } catch (err) {
+    const quota =
+      err instanceof DOMException &&
+      (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED');
+    throw new InventoryWriteError(
+      quota
+        ? `Browser storage is full — the inventory payload is ${(bytes / 1024 / 1024).toFixed(1)} MB and could not be saved. Nothing was published.`
+        : 'Browser storage rejected the inventory write. Nothing was published.',
+      bytes,
+      err
+    );
   }
 }
 
 export function getInventory(): InventoryData {
-  return cached('inventory', () => readOverride() ?? (baseInventory as InventoryData));
+  // Every read goes through normalise, so the committed artifact and any
+  // legacy browser override both present the current record shape.
+  return cached('inventory', () => readOverride() ?? normalizeInventory(baseInventory));
 }
 
 export function getBaselineInventory(): InventoryData {
-  return cached('inventory:baseline', () => baseInventory as InventoryData);
+  return cached('inventory:baseline', () => normalizeInventory(baseInventory));
 }
 
 export function isOverrideActive(): boolean {
@@ -67,6 +122,10 @@ export interface InventoryOverview {
   version: number;
   lastUpdated: string;
   override: boolean;
+  provenance: InventoryProvenance;
+  priceVisible: boolean;
+  provenanceLabel: string;
+  provenanceReason: string;
   resorts: number;
   rateRows: number;
   availabilityDays: number;
@@ -76,12 +135,17 @@ export interface InventoryOverview {
 
 export function getOverview(): InventoryOverview {
   const inv = getInventory();
+  const view = provenanceView(inv);
   return cached(
     `overview:${inv.version}`,
     () => ({
       version: inv.version,
       lastUpdated: inv.lastUpdated,
       override: isOverrideActive(),
+      provenance: view.provenance,
+      priceVisible: view.priceVisible,
+      provenanceLabel: view.label,
+      provenanceReason: view.reason,
       resorts: new Set(inv.rates.map((r) => r.resortSlug)).size,
       rateRows: inv.rates.length,
       availabilityDays: inv.availability.length,
@@ -128,8 +192,16 @@ function rateNumber(cells: Array<RateCell | undefined>): number {
   return min;
 }
 
+/**
+ * Lowest nightly rate for a resort, or null when no verified price exists.
+ *
+ * Returns null unless the inventory provenance is VERIFIED_IMPORT. Structural
+ * data is still available to admin views via getInventory(); this is the
+ * customer-facing accessor and it will not surface unverified numbers.
+ */
 export function getLowestNightly(slug: string): number | null {
   const inv = getInventory();
+  if (!isPriceVerified(inv)) return null;
   return cached(
     `lowest:${slug}:${inv.version}`,
     () => {
@@ -156,8 +228,22 @@ export interface RateRow {
   ext: RateCell;
   child: RateCell;
   infant: RateCell;
+  /** How many rate periods matched. >1 means the periods overlap. */
+  candidateCount: number;
+  /**
+   * True when more than one period matched and the lowest was chosen. Surfaced
+   * rather than applied silently, so an overlapping contract can be reviewed.
+   */
+  ambiguous: boolean;
+  /** The competing periods, for review UIs. */
+  candidates?: Array<{ id: string; validFrom: string; validTo: string; dbl: RateCell; sgl: RateCell }>;
 }
 
+/**
+ * A single rate row for booking, or null when there is no verified price.
+ *
+ * Suppressed unless provenance is VERIFIED_IMPORT, matching getLowestNightly.
+ */
 export function getRateRow(
   slug: string,
   code: string,
@@ -165,6 +251,7 @@ export function getRateRow(
   periodLabel?: string
 ): RateRow | null {
   const inv = getInventory();
+  if (!isPriceVerified(inv)) return null;
   const pool = inv.rates.filter(
     (r) =>
       r.resortSlug === slug &&
@@ -184,11 +271,13 @@ export function getRateRow(
   }
   if (candidates.length === 0) return null;
 
-  const best = [...candidates].sort((a, b) => {
+  const ranked = [...candidates].sort((a, b) => {
     const ba = rateNumber([a.dbl, a.sgl]);
     const bb = rateNumber([b.dbl, b.sgl]);
     return ba - bb;
-  })[0];
+  });
+  const best = ranked[0];
+  const ambiguous = ranked.length > 1;
 
   return {
     period: best.sourcePeriod ?? periodLabel ?? best.validFrom,
@@ -201,19 +290,45 @@ export function getRateRow(
     ext: best.ext,
     child: best.child,
     infant: best.infant,
+    candidateCount: ranked.length,
+    ambiguous,
+    candidates: ambiguous
+      ? ranked.map((r) => ({ id: r.id, validFrom: r.validFrom, validTo: r.validTo, dbl: r.dbl, sgl: r.sgl }))
+      : undefined,
   };
 }
 
 export interface TransferResult {
-  adult: number;
-  child: number | null;
+  id: string;
+  mode: string;
+  periodLabel: string | null;
+  adult: PriceValue;
+  child: PriceValue;
   currency: string;
+  /** Null when the operator did not quote it, so nothing is added to a total. */
+  adultAmount: number | null;
+  childAmount: number | null;
 }
 
-export function getTransfer(slug: string): TransferResult | null {
+/** Find a transfer by resort, optionally narrowed to a mode. */
+export function getTransfer(slug: string, mode?: string): TransferResult | null {
   const inv = getInventory();
-  const t = inv.transfers.find((x) => x.resortSlug === slug);
-  return t ? { adult: t.adult, child: t.child, currency: t.currency } : null;
+  if (!isPriceVerified(inv)) return null;
+  const wanted = mode ? mode.trim().toLowerCase() : null;
+  const t = inv.transfers.find(
+    (x) => x.resortSlug === slug && (!wanted || x.mode.toLowerCase() === wanted)
+  );
+  if (!t) return null;
+  return {
+    id: t.id,
+    mode: t.mode,
+    periodLabel: t.periodLabel,
+    adult: t.adult,
+    child: t.child,
+    currency: t.currency,
+    adultAmount: pricedAmount(t.adult),
+    childAmount: pricedAmount(t.child),
+  };
 }
 
 export interface AvailabilityDay {
@@ -234,6 +349,8 @@ export interface AvailabilitySearchResult {
   available: boolean;
   minNightly: number;
   minTotal: number;
+  /** False when provenance withheld prices; minNightly/minTotal are then 0. */
+  priceVisible: boolean;
 }
 
 export interface SearchRequest {
@@ -254,14 +371,22 @@ function rateForDate(slugsRates: RatePeriod[], roomCode: string, date: string, g
 
 const SELLABLE: AvailabilityStatus[] = ['AVAILABLE', 'ON_REQUEST'];
 
+/**
+ * Availability search. Dates and status are structural and always returned;
+ * every numeric price field is zeroed unless provenance is VERIFIED_IMPORT, so
+ * an unverified dataset can still show "available" without inventing a price.
+ */
 export function searchAvailability(req: SearchRequest): AvailabilitySearchResult {
   const inv = getInventory();
+  const priceVisible = isPriceVerified(inv);
   const { availByKey, ratesBySlug } = buildIndexes(inv);
   const guests = req.guests ?? 2;
   const dates = dateRange(req.from, req.to);
   const rates = ratesBySlug.get(req.resortSlug) ?? inv.rates.filter((r) => r.resortSlug === req.resortSlug);
   const rooms = Array.from(new Set(inv.availability.filter((a) => a.resortSlug === req.resortSlug).map((a) => a.roomCode)));
   const transfer = inv.transfers.find((t) => t.resortSlug === req.resortSlug);
+  const transferAdult = transfer ? pricedAmount(transfer.adult) : null;
+  const transferRate = priceVisible ? (transferAdult ?? 0) : 0;
 
   const days: AvailabilityDay[] = [];
   const lowestPerNight: number[] = [];
@@ -273,14 +398,14 @@ export function searchAvailability(req: SearchRequest): AvailabilitySearchResult
       if (!avail || !SELLABLE.includes(avail.status)) continue;
       const rateRow = rateForDate(rates, roomCode, date, guests);
       if (!rateRow) continue;
-      const r = rateNumber(guests >= 2 ? [rateRow.dbl, rateRow.tpl] : [rateRow.sgl, rateRow.dbl]);
+      const r = priceVisible ? rateNumber(guests >= 2 ? [rateRow.dbl, rateRow.tpl] : [rateRow.sgl, rateRow.dbl]) : 0;
       night.push({
         date,
         roomType: roomCode,
         available: true,
         singleRate: r,
         status: avail.status,
-        transferRate: transfer?.adult ?? 0,
+        transferRate,
       });
       if (nightRate === 0 || (r > 0 && r < nightRate)) nightRate = r;
     }
@@ -292,10 +417,20 @@ export function searchAvailability(req: SearchRequest): AvailabilitySearchResult
   const nights = diffDays(req.from, req.to) + 1;
   const covered = new Set(days.map((d) => d.date));
   const available = dates.length === nights && nights > 0 && dates.every((d) => covered.has(d));
-  const minNightly = lowestPerNight.length ? Math.min(...lowestPerNight) : 0;
+  const minNightly = priceVisible && lowestPerNight.length ? Math.min(...lowestPerNight) : 0;
   const minTotal = available ? minNightly * nights : minNightly;
 
-  return { resort: req.resortSlug, from: req.from, to: req.to, nights, days, available, minNightly, minTotal };
+  return {
+    resort: req.resortSlug,
+    from: req.from,
+    to: req.to,
+    nights,
+    days,
+    available,
+    minNightly,
+    minTotal,
+    priceVisible,
+  };
 }
 
 export interface NightAvailability {
@@ -303,6 +438,7 @@ export interface NightAvailability {
   available: boolean;
   minNightly: number;
   missingDates: string[];
+  priceVisible: boolean;
 }
 
 export function searchForNights(req: {
@@ -325,6 +461,7 @@ export function searchForNights(req: {
     available: result.available,
     minNightly: result.minNightly,
     missingDates,
+    priceVisible: result.priceVisible,
   };
 }
 
@@ -337,6 +474,7 @@ export interface ResortSearchResult {
   minNightly: number;
   minTotal: number;
   sellableDays: number;
+  priceVisible: boolean;
 }
 
 export function searchAll(req: Omit<SearchRequest, 'resortSlug'>): ResortSearchResult[] {
@@ -354,6 +492,7 @@ export function searchAll(req: Omit<SearchRequest, 'resortSlug'>): ResortSearchR
         minNightly: r.minNightly,
         minTotal: r.minTotal,
         sellableDays: new Set(r.days.map((d) => d.date)).size,
+        priceVisible: r.priceVisible,
       };
     })
     .filter((r) => r.sellableDays > 0);
@@ -402,6 +541,9 @@ export function patchAvailability(
     }
   }
   const availability = Array.from(byKey.values());
+  // `...inv` carries provenance forward on purpose: hand-editing availability is
+  // an operational override, not a re-attestation of the rates. Provenance is
+  // re-stamped by the next verified import.
   const result: InventoryData = {
     ...inv,
     version: inv.version + 1,
@@ -430,6 +572,13 @@ export function patchAvailability(
   return { inventory: result, jobSummary: { created, updated, unchanged } };
 }
 
+/**
+ * Persist an inventory as the active override.
+ *
+ * On failure this throws {@link InventoryWriteError} and leaves the previous
+ * override and cache untouched. A caller can never observe a "successful"
+ * publish that did not happen.
+ */
 export function publishInventory(data: InventoryData): InventoryData {
   writeOverride(data);
   invalidate();

@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // Server-only: never import this module from a client component.
@@ -19,6 +19,16 @@ export async function uploadFile(key: string, body: Buffer, contentType: string)
   await s3.send(
     new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: body, ContentType: contentType })
   );
+}
+
+export async function deleteFile(key: string) {
+  await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+}
+
+/** Public bucket URL for a key, e.g. https://cdn.mvcdn.cc/s3/{bucket}/{key}. */
+export function publicUrl(key: string): string {
+  const endpoint = (process.env.R2_ENDPOINT ?? "").replace(/\/+$/, "");
+  return `${endpoint}/${BUCKET}/${key.replace(/^\/+/, "")}`;
 }
 
 export async function presignGet(key: string, expiresIn = 3600): Promise<string> {

@@ -1,20 +1,23 @@
-import { useCallback, useRef, useState } from 'react';
-import { AlertTriangle, Check, Copy, FileUp, FilmIcon, ImagePlus, Link2, Upload } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Check, Copy, FileUp, FilmIcon, ImagePlus, Link2, Trash2, Upload } from 'lucide-react';
 import { cx } from '@/components/ui';
 import {
-  putUpload,
-  requestUploadUrl,
+  uploadForLibrary,
   sanitizeKey,
   toWebP,
-  publicUrl,
   r2ConfigError,
   lastUploadError,
+  fetchMediaList,
+  deleteMedia,
+  type MediaItem,
 } from '@/lib/r2';
 
 /* ------------------------------------------------------------------------ */
-/*  MediaTab — World 2 straight-to-bucket uploads (dev signer / uploader).  */
-/*  Images: browser WebP (canvas) → presigned PUT. Videos: upload web-ready  */
-/*  H.264 as-is with size guard (no ffmpeg in-browser). Returns public URLs. */
+/*  MediaTab — World 2 uploader + media library (oceantune-style contract).  */
+/*  Images: browser WebP (canvas) → POST /api/upload → server-side bucket PUT.*/
+/*  Videos: upload web-ready H.264 as-is with size guard (no ffmpeg in-       */
+/*  browser). Returns public URLs. The library lists prior uploads (dev:      */
+/*  in-memory, prod: Postgres via the uploader's MediaFile index).            */
 /* ------------------------------------------------------------------------ */
 
 type ItemKind = 'image' | 'video';
@@ -39,8 +42,8 @@ const STATUS_LABEL: Record<QueueItem['status'], string> = {
 const VIDEO_MAX_MB = 300;
 const tooBig = (f: File) => f.size / (1024 * 1024) > VIDEO_MAX_MB;
 
-async function uploadOne(file: File, kind: ItemKind): Promise<{ url: string | null; error?: string }> {
-  let key: string;
+async function uploadOne(file: File, kind: ItemKind): Promise<{ url: string | null; key: string; error?: string }> {
+  let name: string;
   let body: Blob;
   let contentType: string;
 
@@ -48,20 +51,17 @@ async function uploadOne(file: File, kind: ItemKind): Promise<{ url: string | nu
     const webp = await toWebP(file);
     body = webp ?? file;
     const ext = webp ? 'webp' : (/\.[a-z0-9]+$/i.exec(file.name)?.[0] ?? '.bin').toLowerCase();
-    key = `${Date.now()}-${sanitizeKey(file.name.replace(/\.[^.]+$/, '') || 'image')}.${ext}`;
+    name = `${Date.now()}-${sanitizeKey(file.name.replace(/\.[^.]+$/, '') || 'image')}.${ext}`;
     contentType = 'image/webp';
   } else {
     body = file;
-    key = `${Date.now()}-${sanitizeKey(file.name.replace(/\.[^.]+$/, '') || 'video')}.mp4`;
+    name = `${Date.now()}-${sanitizeKey(file.name.replace(/\.[^.]+$/, '') || 'video')}.mp4`;
     contentType = 'video/mp4';
   }
 
-  const upload = await requestUploadUrl(key, contentType);
-  if (!upload) return { url: null, error: lastUploadError() ?? undefined };
-  if (!(await putUpload(upload, body))) return { url: null, error: 'Storage rejected the upload' };
-  const url = publicUrl(key);
-  if (!url) return { url: null, error: r2ConfigError() ?? 'VITE_R2_PUBLIC_URL / VITE_R2_BUCKET not set' };
-  return { url };
+  const res = await uploadForLibrary(name, contentType, body);
+  if (!res) return { url: null, key: '', error: lastUploadError() ?? 'Storage rejected the upload' };
+  return { url: res.url, key: res.key };
 }
 
 function UploadCard({ item }: { item: QueueItem }) {
@@ -100,11 +100,62 @@ function UploadCard({ item }: { item: QueueItem }) {
   );
 }
 
+function isVideoUrl(url: string): boolean {
+  return /\.(mp4|mov|webm|m4v)(\?|$)/i.test(url);
+}
+
+function LibraryThumb({ item }: { item: MediaItem }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(item.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+  return (
+    <div className="group overflow-hidden rounded-2xl border border-ink-950/8 bg-white">
+      <div className="grid h-24 w-full place-items-center overflow-hidden bg-sand-100">
+        {isVideoUrl(item.url) ? (
+          <FilmIcon size={26} className="text-ink-400" />
+        ) : (
+          <img src={item.url} alt={item.name} loading="lazy" className="h-full w-full object-cover" />
+        )}
+      </div>
+      <div className="p-2.5">
+        <p className="truncate text-xs font-bold text-ink-900" title={item.name}>{item.name}</p>
+        <p className="mt-0.5 text-[10px] text-ink-400">{new Date(item.createdAt).toLocaleString()}</p>
+        <div className="mt-2 flex items-center gap-1.5">
+          <button
+            onClick={copy}
+            className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-brand-600/20 bg-brand-50 px-2 py-1.5 text-[11px] font-bold text-brand-700 transition-colors hover:bg-brand-100"
+            title="Copy public URL"
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+            {copied ? 'Copied' : 'Copy URL'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MediaTab() {
   const [dragOver, setDragOver] = useState(false);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [library, setLibrary] = useState<MediaItem[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const configError = r2ConfigError();
+
+  const loadLibrary = useCallback(async () => {
+    setLibrary(await fetchMediaList());
+  }, []);
+
+  useEffect(() => {
+    loadLibrary();
+  }, [loadLibrary]);
 
   const run = useCallback(async (files: FileList | File[]) => {
     for (const file of Array.from(files)) {
@@ -114,7 +165,7 @@ export function MediaTab() {
       const res =
         kind === 'image' || !tooBig(file)
           ? await uploadOne(file, kind)
-          : { url: null, error: undefined };
+          : { url: null, key: '', error: undefined };
       setQueue((q) =>
         q.map((it) =>
           it.id === id
@@ -127,8 +178,23 @@ export function MediaTab() {
             : it
         )
       );
+      if (res.url) {
+        setLibrary((lib) => [
+          { key: res.key, url: res.url!, name: file.name, createdAt: new Date().toISOString() },
+          ...(lib ?? []),
+        ]);
+      }
     }
   }, []);
+
+  const remove = async (item: MediaItem) => {
+    if (!item.key) {
+      setLibrary((lib) => (lib ?? []).filter((l) => l.url !== item.url));
+      return;
+    }
+    const ok = await deleteMedia(item.key);
+    if (ok) setLibrary((lib) => (lib ?? []).filter((l) => l.key !== item.key));
+  };
 
   return (
     <div className="space-y-4">
@@ -183,13 +249,43 @@ export function MediaTab() {
         </div>
       )}
 
+      <div className="flex items-center justify-between pt-2 text-xs font-bold uppercase tracking-[0.14em] text-ink-500">
+        <span className="flex items-center gap-1.5"><FileUp size={13} /> Media library</span>
+        <span className="text-ink-400">{library?.length ?? 0} files</span>
+      </div>
+
+      {library === null ? (
+        <div className="rounded-2xl border border-ink-950/8 bg-sand-50 py-6 text-center text-sm text-ink-500">
+          Library unreachable — is the uploader running and VITE_R2_SIGNER_URL set?
+        </div>
+      ) : library.length === 0 ? (
+        <div className="rounded-2xl border border-ink-950/8 bg-sand-50 py-6 text-center text-sm text-ink-500">
+          No media yet. Uploads above appear here (dev keeps them in-memory; production persists them).
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {library.map((item) => (
+            <div key={`${item.key}-${item.url}`} className="group relative">
+              <LibraryThumb item={item} />
+              <button
+                onClick={() => remove(item)}
+                className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-lg bg-white/90 text-rose-600 opacity-0 shadow-sm transition-opacity hover:bg-rose-50 group-hover:opacity-100"
+                title="Delete from library"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="rounded-2xl bg-sand-50 p-4 text-xs leading-relaxed text-ink-600">
         <p className="mb-1 flex items-center gap-1.5 font-bold uppercase tracking-[0.14em] text-ink-500">
           <FileUp size={13} /> How to use
         </p>
-        Uploaded URLs are permanent and public. Copy the URL from a completed card and paste it into any image or
-        video field in the Content tab (e.g. the hero videos list, offer poster, destination images). The hero on the
-        public site keeps using the bundled fallback clips until a video is uploaded here.
+        Uploaded URLs are permanent and public. Copy the URL from a card and paste it into any image or video field
+        in the Content tab (e.g. the hero videos list, offer poster, destination images). The hero on the public site
+        keeps using the bundled fallback clips until a video is uploaded here.
       </div>
     </div>
   );

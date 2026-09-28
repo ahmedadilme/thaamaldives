@@ -12,6 +12,7 @@ import TravelGuide from '@/pages/TravelGuide';
 import About from '@/pages/About';
 import Contact from '@/pages/Contact';
 import Admin from '@/pages/Admin';
+import { AdminGate } from '@/components/admin/admin-gate';
 import NotFound from '@/pages/NotFound';
 
 function ResortRedirect() {
@@ -36,7 +37,7 @@ export default function App() {
           <Route path="/travel-guide" element={<TravelGuide />} />
           <Route path="/about" element={<About />} />
           <Route path="/contact" element={<Contact />} />
-          <Route path="/admin" element={<Admin />} />
+          <Route path="/admin" element={<AdminGate><Admin /></AdminGate>} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

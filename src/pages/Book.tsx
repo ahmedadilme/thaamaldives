@@ -8,7 +8,9 @@ import { properties, getProperty, kindLabel, getAddonsFor } from '@/data/propert
 import type { RateRow } from '@/types';
 import { formatUSD } from '@/lib/format';
 import { submitBooking } from '@/lib/enquiry';
-import { getRateRow, getTransfer } from '@/inventory/client';
+import { getInventory, getRateRow, getTransfer } from '@/inventory/client';
+import { isPriceVerified, provenanceView } from '@/inventory/provenance';
+import { pricedAmount, priceValueLabel } from '@/inventory/schema';
 
 function num(v: string | number | undefined): number {
   if (v === undefined || v === '' || v === 'N/A' || v === 'n/a' || v === '0.00') return 0;
@@ -39,6 +41,9 @@ export default function Book() {
   const [selectedAddons, setSelectedAddons] = useState<Record<string, boolean>>({});
   const [submitted, setSubmitted] = useState(false);
   const [resultMsg, setResultMsg] = useState('');
+  const [guest, setGuest] = useState({ name: '', email: '', phone: '', notes: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const property = getProperty(slug);
 
@@ -59,6 +64,9 @@ export default function Book() {
 
   const matchingRow = useMemo((): RateRow | undefined => {
     if (!property) return undefined;
+    // getRateRow already returns null unless provenance is VERIFIED_IMPORT, so
+    // the fallback below is reached only when a verified import simply has no
+    // matching period. Unverified data never reaches this branch.
     const fromInventory = getRateRow(property.slug, roomCode, meal, period);
     if (fromInventory) {
       return {
@@ -74,6 +82,7 @@ export default function Book() {
         infant: String(fromInventory.infant),
       } as RateRow;
     }
+    if (!isPriceVerified(getInventory())) return undefined;
     const rows = property.contract.rates.filter(
       (r) => r.code === roomCode && r.meal === meal && (!period || r.period === period)
     );
@@ -96,13 +105,25 @@ export default function Book() {
     return getAddonsFor(property.slug, property.addons);
   }, [property]);
 
-  const transferCost = useMemo(() => {
+  /**
+   * Transfer charge, or null when the operator has not quoted a real price.
+   *
+   * null is distinct from 0: `pricedAmount` returns null for UNPRICED and
+   * REFERENCE so those are excluded from the total rather than silently added
+   * as zero, and only FOC collapses to a genuine 0 ("included").
+   */
+  const transferCost = useMemo((): number | null => {
     if (!property || !transferOn) return 0;
     const t = getTransfer(property.slug);
-    if (t) return t.adult * adults;
+    if (t) {
+      const perAdult = pricedAmount(t.adult);
+      return perAdult === null ? null : perAdult * adults;
+    }
+    if (!isPriceVerified(getInventory())) return null;
     const legacy = property.contract.transfers[0];
-    if (!legacy) return 0;
-    return num(legacy.adult) * adults;
+    if (!legacy) return null;
+    const v = num(legacy.adult);
+    return v > 0 ? v * adults : null;
   }, [property, transferOn, adults]);
 
   const addonsTotal = useMemo(() => {
@@ -118,18 +139,31 @@ export default function Book() {
   }, [addons, selectedAddons, nights, adults, children]);
 
   const roomTotal = nightlyRate * nights;
-  const grandTotal = roomTotal + transferCost + addonsTotal;
+  const transferCharge = transferCost ?? 0;
+  const grandTotal = roomTotal + transferCharge + addonsTotal;
   const roomOnRequest = nightlyRate <= 0;
+  /** A grand total is only trustworthy when every component is a real number. */
+  const totalComplete = transferCost !== null;
+  /** Why the numbers above are missing, for an honest "no price" state. */
+  const inventoryView = provenanceView(getInventory());
+  const priceVisible = inventoryView.priceVisible;
+  const priceWithheldReason = inventoryView.reason;
 
   const toggleAddon = (id: string) => setSelectedAddons((prev) => ({ ...prev, [id]: !prev[id] }));
   const selectedAddonList = addons.filter((a) => selectedAddons[a.id]);
 
+  const guestReady = guest.name.trim().length > 0 && /\S+@\S+\.\S+/.test(guest.email.trim());
+
   const onSubmit = async () => {
-    if (!property || !matchingRow) return;
+    if (!property || !matchingRow || submitting || !guestReady) return;
+    setSubmitting(true);
+    setSubmitError(null);
     const room = property.contract.rooms.find((r) => r.code === roomCode);
-    const msg = await submitBooking({
-      name: '',
-      email: '',
+    const res = await submitBooking({
+      name: guest.name.trim(),
+      email: guest.email.trim(),
+      phone: guest.phone.trim() || undefined,
+      message: guest.notes.trim() || undefined,
       propertySlug: property.slug,
       propertyName: property.name,
       roomCode,
@@ -143,7 +177,12 @@ export default function Book() {
       transferType: transferOn ? property.contract.transfers[0]?.type : undefined,
       estimateUSD: grandTotal,
     });
-    setResultMsg(msg.message);
+    setSubmitting(false);
+    if (!res.ok) {
+      setSubmitError(res.message);
+      return;
+    }
+    setResultMsg(res.message);
     setSubmitted(true);
   };
 
@@ -326,7 +365,21 @@ export default function Book() {
               {property && (
                 <div className="mt-6 flex items-start gap-3 rounded-2xl bg-sand-50 p-5 text-xs leading-relaxed text-ink-600">
                   <Info size={15} className="mt-0.5 shrink-0 text-brand-600" />
-                  <span><strong className="text-ink-950">Transfers:</strong> {property.transferNote ?? property.transfer}. {num(property.contract.transfers[0]?.adult) === 0 ? 'Included in rate.' : `Estimated from ${formatUSD(num(property.contract.transfers[0]?.adult) * adults)} for ${adults} adult(s).`}</span>
+                  <span><strong className="text-ink-950">Transfers:</strong> {property.transferNote ?? property.transfer}.{' '}
+                    {(() => {
+                      const t = getTransfer(property.slug);
+                      if (t) {
+                        return t.adultAmount === 0
+                          ? 'Included in rate.'
+                          : t.adultAmount === null
+                            ? `Quoted as ${priceValueLabel(t.adult).toLowerCase()}.`
+                            : `Estimated from ${formatUSD(t.adultAmount)} per adult for ${adults} adult(s).`;
+                      }
+                      if (!priceVisible) return 'No verified transfer price is published yet.';
+                      const legacy = num(property.contract.transfers[0]?.adult);
+                      return legacy === 0 ? 'Included in rate.' : `Estimated from ${formatUSD(legacy * adults)} for ${adults} adult(s).`;
+                    })()}
+                  </span>
                 </div>
               )}
             </div>
@@ -408,6 +461,58 @@ export default function Book() {
                   <p className="mt-6 text-xs leading-relaxed text-ink-500">
                     Submitting sends a request — availability and a final quote will be confirmed within one business day. Prices shown are estimates from our contract and may vary by season and occupancy.
                   </p>
+
+                  <div className="mt-8 rounded-3xl border border-ink-950/8 bg-white p-6">
+                    <h3 className="font-display text-lg font-semibold text-ink-950">Who should we confirm with?</h3>
+                    <p className="mt-1 text-sm text-ink-500">We only use these to reply about this booking.</p>
+                    <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-bold uppercase tracking-[0.14em] text-ink-500">Full name</span>
+                        <input
+                          required
+                          value={guest.name}
+                          onChange={(e) => setGuest((g) => ({ ...g, name: e.target.value }))}
+                          placeholder="e.g. Aishath Naseer"
+                          className="w-full rounded-xl border border-ink-950/10 bg-white px-3.5 py-2.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-bold uppercase tracking-[0.14em] text-ink-500">Email</span>
+                        <input
+                          required
+                          type="email"
+                          value={guest.email}
+                          onChange={(e) => setGuest((g) => ({ ...g, email: e.target.value }))}
+                          placeholder="you@example.com"
+                          className="w-full rounded-xl border border-ink-950/10 bg-white px-3.5 py-2.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-none"
+                        />
+                      </label>
+                      <label className="block sm:col-span-2">
+                        <span className="mb-1 block text-[11px] font-bold uppercase tracking-[0.14em] text-ink-500">Phone / WhatsApp <span className="font-normal normal-case tracking-normal text-ink-400">(optional)</span></span>
+                        <input
+                          value={guest.phone}
+                          onChange={(e) => setGuest((g) => ({ ...g, phone: e.target.value }))}
+                          placeholder="+960 7xxx xxxx"
+                          className="w-full rounded-xl border border-ink-950/10 bg-white px-3.5 py-2.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-none"
+                        />
+                      </label>
+                      <label className="block sm:col-span-2">
+                        <span className="mb-1 block text-[11px] font-bold uppercase tracking-[0.14em] text-ink-500">Anything we should know? <span className="font-normal normal-case tracking-normal text-ink-400">(optional)</span></span>
+                        <textarea
+                          rows={3}
+                          value={guest.notes}
+                          onChange={(e) => setGuest((g) => ({ ...g, notes: e.target.value }))}
+                          placeholder="Celebrations, dietary needs, flight details…"
+                          className="w-full rounded-xl border border-ink-950/10 bg-white px-3.5 py-2.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-none"
+                        />
+                      </label>
+                    </div>
+                    {submitError && (
+                      <p className="mt-4 flex items-start gap-2 rounded-xl bg-rose-50 px-4 py-3 text-sm leading-relaxed text-rose-700">
+                        <Info size={15} className="mt-0.5 shrink-0" /> {submitError}
+                      </p>
+                    )}
+                  </div>
                 </>
               )}
             </div>
@@ -420,16 +525,30 @@ export default function Book() {
                 <p className="text-[10px] font-bold uppercase tracking-[0.26em] text-brand-700">Live estimate</p>
                 <div className="mt-5 space-y-3 text-sm">
                   <div className="flex justify-between gap-4"><span className="text-ink-500">Room · {nights} nights</span><span className="font-semibold text-ink-950">{roomOnRequest ? 'On request' : formatUSD(roomTotal)}</span></div>
-                  {transferOn && <div className="flex justify-between gap-4"><span className="text-ink-500">Transfer ({property.contract.transfers[0]?.type ?? 'Included'})</span><span className="font-semibold text-ink-950">{transferCost > 0 ? formatUSD(transferCost) : 'Included'}</span></div>}
+                  {transferOn && <div className="flex justify-between gap-4"><span className="text-ink-500">Transfer ({property.contract.transfers[0]?.type ?? 'Included'})</span><span className="font-semibold text-ink-950">{transferCost === null ? (priceVisible ? 'On request' : 'Not quoted') : transferCost > 0 ? formatUSD(transferCost) : 'Included'}</span></div>}
                   {addonsTotal > 0 && <div className="flex justify-between gap-4"><span className="text-ink-500">Add-ons ({selectedAddonList.length})</span><span className="font-semibold text-ink-950">{formatUSD(addonsTotal)}</span></div>}
                 </div>
                 <div className="mt-5 flex items-end justify-between border-t border-ink-950/8 pt-4">
                   <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-brand-700">Estimated total</p>
-                  <p className="font-display text-3xl font-semibold text-ink-950">{roomOnRequest ? 'On request' : formatUSD(grandTotal)}</p>
+                  <p className="font-display text-3xl font-semibold text-ink-950">
+                    {roomOnRequest || !totalComplete ? 'On request' : formatUSD(grandTotal)}
+                  </p>
                 </div>
                 <p className="mt-3 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-ink-400">
-                  <Waves size={12} /> {roomOnRequest ? '≈ Room rate on request — final quote confirmed' : `≈ ${formatUSD(nightlyRate)} per night (${occupancy === 'sgl' ? 'single' : 'double'} occupancy)`}
+                  <Waves size={12} />
+                  {roomOnRequest
+                    ? '≈ Room rate on request — final quote confirmed'
+                    : !priceVisible
+                      ? '≈ No verified price published yet — final quote confirmed'
+                      : !totalComplete
+                        ? '≈ Transfer price pending — final quote confirmed'
+                        : `≈ ${formatUSD(nightlyRate)} per night (${occupancy === 'sgl' ? 'single' : 'double'} occupancy)`}
                 </p>
+                {!priceVisible && (
+                  <p className="mt-3 rounded-xl bg-sand-50 px-4 py-3 text-[11px] leading-relaxed text-ink-600">
+                    {priceWithheldReason}
+                  </p>
+                )}
                 <div className="mt-6 space-y-2">
                   {step < 4 && (
                     <button
@@ -443,9 +562,10 @@ export default function Book() {
                   {step === 4 && (
                     <button
                       onClick={onSubmit}
-                      className="flex w-full items-center justify-center gap-2 rounded-full bg-gold-500 px-5 py-3.5 text-xs font-bold uppercase tracking-wider text-ink-950 transition-all hover:bg-gold-400"
+                      disabled={submitting || !guestReady}
+                      className="flex w-full items-center justify-center gap-2 rounded-full bg-gold-500 px-5 py-3.5 text-xs font-bold uppercase tracking-wider text-ink-950 transition-all hover:bg-gold-400 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      Submit booking request <ArrowRight size={14} />
+                      {submitting ? 'Sending…' : 'Submit booking request'} {!submitting && <ArrowRight size={14} />}
                     </button>
                   )}
                   {step > 0 && step < 4 && (
